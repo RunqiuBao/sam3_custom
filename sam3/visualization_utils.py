@@ -19,6 +19,7 @@ from skimage.color import lab2rgb, rgb2lab
 from sklearn.cluster import KMeans
 from torchvision.ops import masks_to_boxes
 from tqdm import tqdm
+import io
 
 
 def generate_colors(n_colors=256, n_samples=5000):
@@ -855,7 +856,7 @@ def visualize_prompt_overlay(
     plt.show()
 
 
-def plot_results(img, results):
+def plot_results(img, results, return_image: bool = False):
     plt.figure(figsize=(12, 8))
     plt.imshow(img)
     nb_objects = len(results["scores"])
@@ -874,6 +875,15 @@ def plot_results(img, results):
             color=color,
             relative_coords=False,
         )
+    
+    if return_image:
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+
+        buf.seek(0)
+        return Image.open(buf)
+
+    return None
 
 
 def single_visualization(img, anns, title):
