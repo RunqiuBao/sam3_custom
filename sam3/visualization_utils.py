@@ -145,11 +145,34 @@ def plot_bbox(
         )
 
 
+def filter_small_segments(mask, min_area: int):
+    """
+    Removes small disconnected regions from a binary mask.
+    """
+    # 1. Convert mask to uint8 (0 or 255) for OpenCV
+    # Assuming 'mask' is boolean or 0/1 float
+    mask_uint8 = (mask > 0).astype(np.uint8) * 255
+    
+    # 2. Find contours
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 3. Iterate and remove small items
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            # Draw over the small contour with 0 (black) to erase it
+            cv2.drawContours(mask_uint8, [contour], -1, 0, thickness=cv2.FILLED)
+            
+    # 4. Convert back to original format (boolean or 0/1) if needed
+    return mask_uint8 > 0
+
+
 def plot_mask(mask, color="r", ax=None):
     im_h, im_w = mask.shape
     mask_img = np.zeros((im_h, im_w, 4), dtype=np.float32)
     mask_img[..., :3] = to_rgb(color)
-    mask_img[..., 3] = mask * 0.5
+    cleaned_mask = filter_small_segments(mask.cpu().numpy(), min_area=2048)
+    mask_img[..., 3] = cleaned_mask * 0.5
     # Use the provided ax or the current axis
     if ax is None:
         ax = plt.gca()
