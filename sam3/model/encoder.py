@@ -2,7 +2,7 @@
 # Based on https://github.com/IDEA-Research/GroundingDINO
 
 # pyre-unsafe
-
+from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -567,7 +567,6 @@ class TransformerEncoderFusion(TransformerEncoder):
             prompt_key_padding_mask=prompt_key_padding_mask,
             encoder_extra_kwargs=encoder_extra_kwargs,
         )
-
         return {
             "memory": out,
             "padding_mask": key_padding_masks_flatten,
@@ -576,6 +575,53 @@ class TransformerEncoderFusion(TransformerEncoder):
             "level_start_index": level_start_index,
             "spatial_shapes": spatial_shapes,
             "valid_ratios": valid_ratios,
+        }
+
+    def forward_onnx(
+        self,
+        src_imgfeat: Tensor,
+        prompt: Tensor,
+        src_pos: Tensor | None = None,
+        prompt_key_padding_mask: Tensor | None = None,
+        prompt_pos: Tensor | None = None,
+    ):
+        # Restore spatial shapes of vision
+        (bs, space_size) = src_imgfeat.shape[-2:]
+        src_imgfeat = src_imgfeat.permute(2, 3, 0, 1)
+        src_pos = src_pos.permute(2, 3, 0, 1)
+        src_key_padding_mask = None
+
+        if self.add_pooled_text_to_img_feat:
+            # Fusion: Add mean pooled text to image features
+            pooled_text = pool_text_feat(
+                prompt, prompt_key_padding_mask, self.pool_text_with_mask
+            )
+            pooled_text = self.text_pooling_proj(pooled_text)[
+                ..., None, None
+            ]  # prompt is seq first
+            src_imgfeat = src_imgfeat.add_(pooled_text)
+
+        (
+            out,
+            key_padding_masks_flatten,
+            lvl_pos_embed_flatten,
+            level_start_index,
+            spatial_shapes,
+            valid_ratios,
+        ) = super().forward(
+            [src_imgfeat],
+            src_key_padding_masks=[src_key_padding_mask],
+            pos=[src_pos],
+            prompt=prompt.transpose(0, 1),
+            prompt_key_padding_mask=prompt_key_padding_mask,
+        )
+
+        return {
+            "memory": out,  # (res*res, b, space)
+            "pos_embed": lvl_pos_embed_flatten,  # (res*res, b, space)
+            "level_start_index": level_start_index,  # (b,)
+            "spatial_shapes": spatial_shapes,  # (b, 2)
+            "valid_ratios": valid_ratios,  # (b, 1, 2)
         }
 
 

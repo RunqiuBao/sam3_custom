@@ -328,3 +328,34 @@ class VETextEncoder(nn.Module):
             text_memory_resized,
             inputs_embeds.transpose(0, 1),
         )
+    
+    def forward_onnx(
+        self,
+        text_tokens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            text_tokens: (b, seq_len) shape. seq_len is 32 in default (CLIP).
+        """
+        text_attention_mask = (text_tokens != 0).bool()
+
+        # manually embed the tokens
+        inputs_embeds = self.encoder.token_embedding(
+            text_tokens
+        )  # [b, seq_len, d=1024]
+        text_memory = self.encoder(text_tokens)[1]  # [b, seq_len, d=1024]
+
+        assert text_memory.shape[1] == inputs_embeds.shape[1]
+        # Invert attention mask because its the opposite in pytorch transformer
+        text_attention_mask = text_attention_mask.ne(1)
+        # Transpose memory because pytorch's attention expects sequence first
+        text_memory = text_memory.transpose(0, 1)
+        # Resize the encoder hidden states to be of the same d_model as the decoder
+        text_memory_resized = self.resizer(text_memory)
+
+        # Note that the input_embeds are returned in pytorch's convention (sequence first)
+        return (
+            text_attention_mask,
+            text_memory_resized,
+            inputs_embeds.transpose(0, 1),
+        )

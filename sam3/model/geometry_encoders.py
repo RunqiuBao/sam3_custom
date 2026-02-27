@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
 # pyre-unsafe
+from __future__ import annotations
 
 from typing import Tuple
 
@@ -48,8 +49,8 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     torch._assert_async(is_right_padded(mask1))
     torch._assert_async(is_right_padded(mask2))
 
-    actual_seq1_lengths = (~mask1).sum(dim=-1)
-    actual_seq2_lengths = (~mask2).sum(dim=-1)
+    actual_seq1_lengths = (~mask1.bool()).sum(dim=-1)
+    actual_seq2_lengths = (~mask2.bool()).sum(dim=-1)
 
     final_lengths = actual_seq1_lengths + actual_seq2_lengths
     max_length = seq1_length + seq2_length
@@ -645,7 +646,10 @@ class SequenceGeometryEncoder(nn.Module):
             # We need to denormalize, and convert to [x, y, x, y]
             boxes_xyxy = box_cxcywh_to_xyxy(boxes)
             scale = torch.tensor([W, H, W, H], dtype=boxes_xyxy.dtype)
-            scale = scale.pin_memory().to(device=boxes_xyxy.device, non_blocking=True)
+            if torch.onnx.is_in_onnx_export():
+                scale = scale.to(device=boxes_xyxy.device)
+            else:
+                scale = scale.pin_memory().to(device=boxes_xyxy.device, non_blocking=True)
             scale = scale.view(1, 1, 4)
             boxes_xyxy = boxes_xyxy * scale
             sampled = torchvision.ops.roi_align(
@@ -713,29 +717,26 @@ class SequenceGeometryEncoder(nn.Module):
         if self.add_mask_label:
             masks = masks + self.mask_label_embed(mask_labels.long())
         return masks, attn_mask
-
-    def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
-        points = geo_prompt.point_embeddings
-        points_mask = geo_prompt.point_mask
-        points_labels = geo_prompt.point_labels
-        boxes = geo_prompt.box_embeddings
-        boxes_mask = geo_prompt.box_mask
-        boxes_labels = geo_prompt.box_labels
-        masks = geo_prompt.mask_embeddings
-        masks_mask = geo_prompt.mask_mask
-        masks_labels = geo_prompt.mask_labels
-        seq_first_img_feats = img_feats[-1]  # [H*W, B, C]
-        seq_first_img_pos_embeds = (
-            img_pos_embeds[-1]
-            if img_pos_embeds is not None
-            else torch.zeros_like(seq_first_img_feats)
-        )
-
+    
+    def _forward(
+        self,
+        points: torch.Tensor,  # (xp, b, 2)
+        points_mask: torch.Tensor,  # (b, xp)
+        points_labels: torch.Tensor,  # (b, xp)
+        boxes: torch.Tensor,  # (xb, b, 4)
+        boxes_mask: torch.Tensor,  # (b, xb)
+        boxes_labels: torch.Tensor,  # (b, xb)
+        masks: torch.Tensor | None,
+        masks_mask: torch.Tensor,  # (b, xm)
+        masks_labels: torch.Tensor,  # (xm, b)
+        seq_first_img_feats: torch.Tensor,  # (res, b, space)
+        seq_first_img_pos_embeds: torch.Tensor,  # (res, b, space)
+        img_size: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.points_pool_project or self.boxes_pool_project:
-            assert len(img_feats) == len(img_sizes)
-            cur_img_feat = img_feats[-1]
+            cur_img_feat = seq_first_img_feats
             cur_img_feat = self.img_pre_norm(cur_img_feat)
-            H, W = img_sizes[-1]
+            H, W = img_size
             assert cur_img_feat.shape[0] == H * W
             N, C = cur_img_feat.shape[-2:]
             # Put back in NxCxHxW
@@ -836,3 +837,66 @@ class SequenceGeometryEncoder(nn.Module):
                 final_embeds, final_mask, masks_embed, masks_mask
             )
         return final_embeds, final_mask
+
+    def forward(self, geo_prompt: Prompt, img_feats, img_sizes, img_pos_embeds=None):
+        points = geo_prompt.point_embeddings
+        points_mask = geo_prompt.point_mask
+        points_labels = geo_prompt.point_labels
+        boxes = geo_prompt.box_embeddings
+        boxes_mask = geo_prompt.box_mask
+        boxes_labels = geo_prompt.box_labels
+        masks = geo_prompt.mask_embeddings
+        masks_mask = geo_prompt.mask_mask
+        masks_labels = geo_prompt.mask_labels
+        seq_first_img_feats = img_feats[-1]  # [H*W, B, C]
+        seq_first_img_pos_embeds = (
+            img_pos_embeds[-1]
+            if img_pos_embeds is not None
+            else torch.zeros_like(seq_first_img_feats)
+        )
+        assert len(img_feats) == len(img_sizes)
+        return self._forward(
+            points,
+            points_mask,
+            points_labels,
+            boxes,
+            boxes_mask,
+            boxes_labels,
+            masks,
+            masks_mask,
+            masks_labels,
+            seq_first_img_feats,
+            seq_first_img_pos_embeds,
+            img_sizes[-1]
+        )
+
+    def forward_onnx(
+        self,
+        points: torch.Tensor,  # (xp, b, 2)
+        points_mask: torch.Tensor,  # (b, xp)
+        points_labels: torch.Tensor,  # (xp, b)
+        boxes: torch.Tensor,  # (xb, b, 4)
+        boxes_mask: torch.Tensor,  # (b, xb)
+        boxes_labels: torch.Tensor,  # (xb, b)
+        seq_first_img_feats: torch.Tensor,  # (res, b, space)
+        seq_first_img_pos_embeds: torch.Tensor,  # (res, b, space)
+        img_sizes: tuple,
+    ):
+        batch_size = points.shape[1]
+        masks = None
+        masks_mask = seq_first_img_feats.new_empty(batch_size, 0)  # (b, xm)
+        masks_labels = seq_first_img_feats.new_empty(0, batch_size)  # (xm, b)
+        return self._forward(
+            points,
+            points_mask,
+            points_labels,
+            boxes,
+            boxes_mask,
+            boxes_labels,
+            masks,
+            masks_mask,
+            masks_labels,
+            seq_first_img_feats,
+            seq_first_img_pos_embeds,
+            img_sizes,
+        )

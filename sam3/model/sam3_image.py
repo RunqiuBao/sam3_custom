@@ -13,6 +13,7 @@ from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor
 from sam3.model.vl_combiner import SAM3VLBackbone
 from sam3.perflib.nms import nms_masks
 from sam3.train.data.collator import BatchedDatapoint
+from sam3.model.data_misc import FindStage
 
 from .act_ckpt_utils import activation_ckpt_wrapper
 from .box_ops import box_cxcywh_to_xyxy
@@ -387,7 +388,6 @@ class Sam3Image(torch.nn.Module):
         out,
         backbone_out,
         img_ids,
-        vis_feat_sizes,
         encoder_hidden_states,
         prompt,
         prompt_mask,
@@ -447,6 +447,7 @@ class Sam3Image(torch.nn.Module):
             prompt, prompt_mask, backbone_out = self._encode_prompt(
                 backbone_out, find_input, geometric_prompt
             )
+
         # Run the encoder
         with torch.profiler.record_function("SAM3Image._run_encoder"):
             backbone_out, encoder_out, _ = self._run_encoder(
@@ -478,7 +479,6 @@ class Sam3Image(torch.nn.Module):
                 out=out,
                 backbone_out=backbone_out,
                 img_ids=find_input.img_ids,
-                vis_feat_sizes=encoder_out["vis_feat_sizes"],
                 encoder_hidden_states=out["encoder_hidden_states"],
                 prompt=prompt,
                 prompt_mask=prompt_mask,
@@ -488,6 +488,71 @@ class Sam3Image(torch.nn.Module):
         if self.training or self.num_interactive_steps_val > 0:
             self._compute_matching(out, self.back_convert(find_target))
         return out
+
+    def forward_grounding_transformerDetector_onnx(
+        self,
+        backbone_fpn_0: torch.Tensor,
+        backbone_fpn_1:  torch.Tensor,
+        backbone_fpn_2: torch.Tensor,  # (b, space, res, res)
+        vision_pos_enc_2: torch.Tensor,  # (b, space, res, res)
+        prompt: torch.Tensor,  # (xp, b, space)
+        prompt_mask: torch.Tensor,  # (b, xp)
+    ):
+        device = backbone_fpn_2.device
+        # only dummy since we are not using tracker.
+        find_input = FindStage(
+            img_ids=torch.tensor([0], device=device, dtype=torch.long),
+            text_ids=torch.tensor([0], device=device, dtype=torch.long),
+            input_boxes=None,
+            input_boxes_mask=None,
+            input_boxes_label=None,
+            input_points=None,
+            input_points_mask=None,
+        )
+        backbone_out = {
+            "backbone_fpn": [
+                backbone_fpn_0,
+                backbone_fpn_1,
+                backbone_fpn_2,
+            ],
+            "vision_pos_enc": [vision_pos_enc_2],
+        }
+        backbone_out, encoder_out, _ = self._run_encoder(
+            backbone_out, find_input, prompt, prompt_mask
+        )
+        out = {
+            "encoder_hidden_states": encoder_out["encoder_hidden_states"],
+            "prev_encoder_out": {
+                "encoder_out": encoder_out,
+                "backbone_out": backbone_out,
+            },
+        }
+
+        # Run the decoder
+        out, hs = self._run_decoder(
+            memory=out["encoder_hidden_states"],
+            pos_embed=encoder_out["pos_embed"],
+            src_mask=encoder_out["padding_mask"],
+            out=out,
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            encoder_out=encoder_out,
+        )
+        self._run_segmentation_heads(
+            out=out,
+            backbone_out=backbone_out,
+            img_ids=find_input.img_ids,
+            encoder_hidden_states=out["encoder_hidden_states"],
+            prompt=prompt,
+            prompt_mask=prompt_mask,
+            hs=hs,
+        )
+        return {
+            "pred_boxes": out["pred_boxes"],  # (b, numSeed, 4)
+            "pred_logits": out["pred_logits"],  # (b, numSeed, 1)
+            "pred_masks": out["pred_masks"],  # (b, numSeed, res, res)
+            "presence_logit_dec": out["presence_logit_dec"],  # (1, 1). object presence probability of this query.
+        }
 
     def _postprocess_out(self, out: Dict, multimask_output: bool = False):
         # For multimask output, during eval we return the single best mask with the dict keys expected by the evaluators, but also return the multimasks output with new keys.
