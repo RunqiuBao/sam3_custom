@@ -115,7 +115,6 @@ class Sam3Processor:
 
         if "backbone_out" not in state:
             raise ValueError("You must call set_image before set_text_prompt")
-
         text_outputs = self.model.backbone.forward_text([prompt], device=self.device)
         # will erase the previous text prompt if any
         state["backbone_out"].update(text_outputs)
@@ -148,6 +147,33 @@ class Sam3Processor:
         boxes = torch.tensor(box, device=self.device, dtype=torch.float32).view(1, 1, 4)
         labels = torch.tensor([label], device=self.device, dtype=torch.bool).view(1, 1)
         state["geometric_prompt"].append_boxes(boxes, labels)
+
+        return self._forward_grounding(state)
+
+    @torch.inference_mode()
+    def add_geometric_prompt2(self, point: List, label: bool, state: Dict):
+        """Adds a point prompt and run the inference.
+        The image needs to be set, but not necessarily the text prompt.
+        The point is assumed to be in [x, y] format and normalized in [0, 1] range.
+        The label is True for a positive point, False for a negative point.
+        """
+        if "backbone_out" not in state:
+            raise ValueError("You must call set_image before set_text_prompt")
+
+        if "language_features" not in state["backbone_out"]:
+            # Looks like we don't have a text prompt yet. This is allowed, but we need to set the text prompt to "visual" for the model to rely only on the geometric prompt
+            dummy_text_outputs = self.model.backbone.forward_text(
+                ["visual"], device=self.device
+            )
+            state["backbone_out"].update(dummy_text_outputs)
+
+        if "geometric_prompt" not in state:
+            state["geometric_prompt"] = self.model._get_dummy_prompt()
+
+        # adding a batch and sequence dimension
+        points = torch.tensor(point, device=self.device, dtype=torch.float32).view(-1, 1, 2)
+        labels = torch.tensor([label], device=self.device, dtype=torch.bool).view(-1, 1)
+        state["geometric_prompt"].append_points(points, labels)
 
         return self._forward_grounding(state)
 
