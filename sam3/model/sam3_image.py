@@ -443,6 +443,13 @@ class Sam3Image(torch.nn.Module):
         find_target,
         geometric_prompt: Prompt,
     ):
+        # N = 32
+        # geometric_prompt.point_mask = torch.ones(1, N, dtype=torch.bool, device='cuda:0')
+        # geometric_prompt.point_embeddings = torch.zeros(N, 1, 2, dtype=geometric_prompt.point_embeddings.dtype, device='cuda:0')
+        # geometric_prompt.point_labels = torch.zeros(N, 1, dtype=geometric_prompt.point_labels.dtype, device='cuda:0')
+        # geometric_prompt.box_mask = torch.ones(1, N, dtype=torch.bool, device='cuda:0')
+        # geometric_prompt.box_embeddings = torch.zeros(N, 1, 4, dtype=geometric_prompt.box_embeddings.dtype, device='cuda:0')
+        # geometric_prompt.box_labels = torch.zeros(N, 1, dtype=geometric_prompt.box_labels.dtype, device='cuda:0')
         with torch.profiler.record_function("SAM3Image._encode_prompt"):
             prompt, prompt_mask, backbone_out = self._encode_prompt(
                 backbone_out, find_input, geometric_prompt
