@@ -46,11 +46,10 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     assert seq1_length == mask1.size(1)
     assert seq2_length == mask2.size(1)
 
-    torch._assert_async(is_right_padded(mask1))
+    torch._assert_async(is_right_padded(mask1))  # real values should come first, then padding after.
     torch._assert_async(is_right_padded(mask2))
-
-    actual_seq1_lengths = (~mask1.bool()).sum(dim=-1)
-    actual_seq2_lengths = (~mask2.bool()).sum(dim=-1)
+    actual_seq1_lengths = (~mask1).sum(dim=-1)
+    actual_seq2_lengths = (~mask2).sum(dim=-1)
 
     final_lengths = actual_seq1_lengths + actual_seq2_lengths
     max_length = seq1_length + seq2_length
@@ -319,6 +318,7 @@ class Prompt:
         return mask_embeddings, mask_labels, mask_mask
 
     def append_boxes(self, boxes, labels, mask=None):
+
         if self.box_embeddings is None:
             self.box_embeddings = boxes
             self.box_labels = labels
